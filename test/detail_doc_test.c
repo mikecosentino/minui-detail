@@ -56,6 +56,21 @@ int main(void)
         DetailDoc_Free(&d);
     }
 
+    // screenshots keep their order, skip empty paths, and stop at the limit
+    {
+        char big[8192] = "{\"screenshots\":[\"/a.jpg\",\"\",null,\"/b.jpg\"";
+        for (int i = 0; i < DETAIL_SHOTS_MAX + 3; i++)
+            strcat(big, ",\"/c.jpg\"");
+        strcat(big, "]}");
+        CHECK(DetailDoc_Parse(big, &d, err, sizeof(err)) == 1);
+        CHECK(d.shot_count == DETAIL_SHOTS_MAX);
+        CHECK(strcmp(d.shots[0], "/a.jpg") == 0 && strcmp(d.shots[1], "/b.jpg") == 0);
+        DetailDoc_Free(&d);
+    }
+    CHECK(DetailDoc_Parse("{\"screenshots\":\"/a.jpg\"}", &d, err, sizeof(err)) == 1);
+    CHECK(d.shot_count == 0);
+    DetailDoc_Free(&d);
+
     CHECK(DetailDoc_Parse("{not json", &d, err, sizeof(err)) == 0);
     CHECK(err[0] != '\0');
     DetailDoc_Free(&d);

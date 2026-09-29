@@ -2,7 +2,7 @@
 
 A detail screen for [MinUI](https://github.com/shauninman/MinUI) and
 [NextUI](https://github.com/LoveRetro/NextUI) paks: a cover image, a title, a
-column of facts and a description that scrolls, over a row of button hints.
+column of facts, a description and screenshots that scroll, over a row of button hints.
 
 minui-list only shows rows of single-line text, so a pak's "about this game" screen
 turns into `Developer: …` rows with the summary chopped into more of them. This
@@ -32,7 +32,8 @@ the same way it does from any other screen.
   "fields":      [ {"label": "Genre", "value": "Role-playing (RPG)"},
                    {"label": "Size",  "value": "1.40 GB (Free: 22.1 GB)"} ],
   "note":        "Already downloaded",
-  "description": "The world has fallen under the control of …"
+  "description": "The world has fallen under the control of …",
+  "screenshots": [ "/mnt/SDCARD/.../sc1.jpg", "/mnt/SDCARD/.../sc2.jpg" ]
 }
 ```
 
@@ -42,14 +43,24 @@ Every key is optional.
 |---|---|
 | `title` | large, wraps to two lines, then cut short with `…` |
 | `subtitle` | one dimmed line under the title |
-| `image` | an absolute path to a PNG or JPEG. It's scaled to fit on the left with a box filter, so a big cover shrinks cleanly. If it's missing or unreadable, the text uses the full width. |
+| `image` | an absolute path to a PNG or JPEG. It's scaled to fit at the top left with a box filter, so a big cover shrinks cleanly. If it's missing or unreadable, the text uses the full width. |
 | `fields` | label/value rows with the labels lined up in a column. A value wraps to three lines. A field with an empty or missing value is left out, so you can pass through whatever you have. Values can be strings or numbers. |
 | `note` | one line in the accent color, e.g. `Already downloaded` |
 | `description` | wraps to fit. A blank line between paragraphs is kept. |
+| `screenshots` | absolute paths to PNG or JPEG images, drawn in order under the description. Each is scaled to the page's width, but never taller than the screen, so a portrait shot is always seen whole. Paths that are empty or can't be read are skipped. Up to 8. |
 
-Only the cover stays put. The text column scrolls as a whole: every MinUI screen is
-about 240 units tall once scaled, which leaves no room to give the description a
-fixed box of its own. A scrollbar shows when the column doesn't fit.
+The page is laid out like this, and scrolls as a whole:
+
+```
+[ cover ] [ title, subtitle, fields, note ]
+[ description                             ]
+[ screenshot                              ]
+[ screenshot                              ]
+```
+
+The description and screenshots start below whichever is taller, the cover or the
+facts. Every MinUI screen is about 240 units tall once scaled, which leaves no room
+to hold any part of the page still. A scrollbar shows when the page doesn't fit.
 
 ## Controls
 

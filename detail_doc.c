@@ -66,6 +66,18 @@ int DetailDoc_Parse(const char *json, DetailDoc *doc, char *err, size_t err_len)
             doc->field_count++;
     }
 
+    const cJSON *shots = cJSON_GetObjectItemCaseSensitive(root, "screenshots");
+    const cJSON *shot;
+    cJSON_ArrayForEach(shot, shots)
+    {
+        if (doc->shot_count >= DETAIL_SHOTS_MAX)
+            break;
+        char *out = doc->shots[doc->shot_count];
+        copy_value(shot, out, DETAIL_PATH_MAX);
+        if (out[0] != '\0')
+            doc->shot_count++;
+    }
+
     cJSON_Delete(root);
     if (doc->description == NULL)
     {
