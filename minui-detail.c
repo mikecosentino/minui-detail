@@ -107,19 +107,20 @@ struct Item
 
 // Everything whose size depends on the screen, worked out once at startup.
 //
-// Only the cover stays put. Everything to its right -- title, facts,
-// description -- is one column that scrolls as a whole: every MinUI screen is
-// about 240 units tall once scaled, which leaves no room to give the
-// description a fixed box of its own under the facts.
+// The whole page scrolls as one piece: the cover with the title and facts
+// beside it, then the description and screenshots across the full width
+// below. Every MinUI screen is about 240 units tall once scaled, which leaves
+// no room to hold any part of it still.
 struct Layout
 {
     int margin;
     int gap;
 
     SDL_Surface *cover; // already scaled, in the screen's format; may be NULL
+    // relative to the page's top, like everything else that scrolls
     SDL_Rect cover_rect;
 
-    // the column's visible window on the screen
+    // the page's visible window on the screen
     SDL_Rect view;
     // how far down the scrollbar starts, to clear the battery and wifi
     int scrollbar_top;
@@ -128,7 +129,7 @@ struct Layout
     int item_count;
 
     // screenshots, below the description. src is the full-size image, read
-    // once; rect is where layout_column put it, relative to the column's top,
+    // once; rect is where layout_page put it, relative to the page's top,
     // and shot is src scaled to that size once the layout is final.
     SDL_Surface *shot_src[DETAIL_SHOTS_MAX];
     SDL_Surface *shot[DETAIL_SHOTS_MAX];
@@ -383,23 +384,35 @@ static int add_wrapped(TTF_Font *f, enum TextStyle style, int x, int y, int w,
     return y;
 }
 
-// layout_column places the column's lines for a given width and returns the
-// height they take up:
+// layout_page places the page's lines and images for a given width and
+// returns the height they take up:
 //
-//   title           (large, up to two lines)
-//   subtitle        (small, dimmed)
-//   Label  value    (one row per field, labels dimmed, values wrapping)
-//   note            (small, accent)
-//   description     (small)
-//   screenshots     (the column's width, no taller than the window)
-static int layout_column(const DetailDoc *doc, int x, int w, int title_w, int gap, int max_h)
+//   [ cover ]  title           (large, up to two lines)
+//              subtitle        (small, dimmed)
+//              Label  value    (one row per field, labels dimmed, values wrapping)
+//              note            (small, accent)
+//   description                (small, the full width, under whichever of the
+//                               cover and the facts ends lower)
+//   screenshots                (the full width, no taller than the window)
+//
+// x and w are the page's; the facts sit right of the cover, and the title
+// gives up title_reserve on its right to the battery and wifi.
+static int layout_page(const DetailDoc *doc, int x, int w, int title_reserve, int gap, int max_h)
 {
     layout.item_count = 0;
+
+    int fx = x;
+    if (layout.cover != NULL)
+    {
+        layout.cover_rect = (SDL_Rect){x, 0, layout.cover->w, layout.cover->h};
+        fx = x + layout.cover->w + gap * 2;
+    }
+    int fw = x + w - fx;
     int y = 0;
 
-    y = add_wrapped(font.large, StyleText, x, y, title_w, doc->title, TITLE_MAX_LINES);
+    y = add_wrapped(font.large, StyleText, fx, y, fw - title_reserve, doc->title, TITLE_MAX_LINES);
     if (doc->subtitle[0] != '\0')
-        y = add_wrapped(font.small, StyleDim, x, y, w, doc->subtitle, 1);
+        y = add_wrapped(font.small, StyleDim, fx, y, fw, doc->subtitle, 1);
 
     if (doc->field_count > 0 || doc->note[0] != '\0')
     {
@@ -414,20 +427,24 @@ static int layout_column(const DetailDoc *doc, int x, int w, int title_w, int ga
             if (lw > label_w)
                 label_w = lw;
         }
-        if (label_w > w * 2 / 5)
-            label_w = w * 2 / 5;
-        int value_x = x + (label_w > 0 ? label_w + gap : 0);
-        int value_w = x + w - value_x;
+        if (label_w > fw * 2 / 5)
+            label_w = fw * 2 / 5;
+        int value_x = fx + (label_w > 0 ? label_w + gap : 0);
+        int value_w = fx + fw - value_x;
 
         for (int i = 0; i < doc->field_count; i++)
         {
             const DetailField *f = &doc->fields[i];
-            add_wrapped(font.small, StyleDim, x, y, label_w, f->label, 1);
+            add_wrapped(font.small, StyleDim, fx, y, label_w, f->label, 1);
             y = add_wrapped(font.small, StyleText, value_x, y, value_w, f->value, VALUE_MAX_LINES);
         }
         if (doc->note[0] != '\0')
-            y = add_wrapped(font.small, StyleAccent, x, y, w, doc->note, 1);
+            y = add_wrapped(font.small, StyleAccent, fx, y, fw, doc->note, 1);
     }
+
+    // everything from here spans the page, below the cover or the facts
+    if (layout.cover != NULL && layout.cover->h > y)
+        y = layout.cover->h;
 
     if (doc->description[0] != '\0')
     {
@@ -436,7 +453,7 @@ static int layout_column(const DetailDoc *doc, int x, int w, int title_w, int ga
         y = add_wrapped(font.small, StyleText, x, y, w, doc->description, 0);
     }
 
-    // each fits the column's width, and is held to the window's height so a
+    // each fits the page's width, and is held to the window's height so a
     // portrait shot never needs scrolling through to see whole
     for (int i = 0; i < layout.shot_count; i++)
     {
@@ -445,7 +462,8 @@ static int layout_column(const DetailDoc *doc, int x, int w, int title_w, int ga
         Image_Fit(src->w, src->h, w, max_h, &dw, &dh);
         if (y > 0)
             y += gap;
-        layout.shot_rect[i] = (SDL_Rect){x, y, dw, dh};
+        // one held to the window's height comes out narrower than the page
+        layout.shot_rect[i] = (SDL_Rect){x + (w - dw) / 2, y, dw, dh};
         y += dh;
     }
     return y;
@@ -462,16 +480,12 @@ static void build_layout(struct AppState *state)
     int top = l->margin;
     int bottom = screen->h - SCALE1(PADDING + PILL_SIZE) - l->gap;
 
-    int col_x = l->margin;
+    int page_x = l->margin;
+    int page_w = screen->w - l->margin * 2;
+    l->view = (SDL_Rect){page_x, top, page_w, bottom - top};
+
     int box_w = (int)(screen->w * COVER_MAX_FRACTION);
-    l->cover = load_cover(doc->image, box_w, bottom - top);
-    if (l->cover != NULL)
-    {
-        l->cover_rect = (SDL_Rect){l->margin, top, l->cover->w, l->cover->h};
-        col_x = l->margin + l->cover->w + l->gap * 2;
-    }
-    int col_w = screen->w - col_x - l->margin;
-    l->view = (SDL_Rect){col_x, top, col_w, bottom - top};
+    l->cover = load_cover(doc->image, box_w, l->view.h);
 
     // leave room for battery and wifi beside the title
     int reserve = state->show_hardware_group ? SCALE1(PILL_SIZE * 2) + l->gap : 0;
@@ -486,14 +500,14 @@ static void build_layout(struct AppState *state)
     }
 
     // lay out at the full width first; only if that overflows the window is
-    // a scrollbar needed, and then the text wraps again beside it
+    // a scrollbar needed, and then the page wraps again beside it
     l->scrollbar = false;
-    l->content_h = layout_column(doc, col_x, col_w, col_w - reserve, l->gap, l->view.h);
+    l->content_h = layout_page(doc, page_x, page_w, reserve, l->gap, l->view.h);
     if (l->content_h > l->view.h)
     {
         l->scrollbar = true;
-        int w = col_w - SCALE1(SCROLLBAR_WIDTH) - l->gap;
-        l->content_h = layout_column(doc, col_x, w, w - reserve, l->gap, l->view.h);
+        int w = page_w - SCALE1(SCROLLBAR_WIDTH) - l->gap;
+        l->content_h = layout_page(doc, page_x, w, reserve, l->gap, l->view.h);
     }
     l->scroll = 0;
 
@@ -535,16 +549,20 @@ void draw_screen(SDL_Surface *dst, struct AppState *state)
 
     SDL_FillRect(dst, NULL, background_color(dst));
 
+    // anything part-scrolled out of the window is cut at its edge
+    SDL_Rect clip = l->view;
+    SDL_SetClipRect(dst, &clip);
     if (l->cover != NULL)
     {
         SDL_Rect r = l->cover_rect;
-        SDL_BlitSurface(l->cover, NULL, dst, &r);
-        round_corners(dst, l->cover_rect, SCALE1(COVER_RADIUS), background_color(dst));
+        r.y += l->view.y - l->scroll;
+        if (r.y + r.h > l->view.y)
+        {
+            SDL_Rect pos = r;
+            SDL_BlitSurface(l->cover, NULL, dst, &pos);
+            round_corners(dst, r, SCALE1(COVER_RADIUS), background_color(dst));
+        }
     }
-
-    // lines part-scrolled out of the window are cut at its edge
-    SDL_Rect clip = l->view;
-    SDL_SetClipRect(dst, &clip);
     for (int i = 0; i < l->item_count; i++)
     {
         struct Item *it = &l->items[i];
