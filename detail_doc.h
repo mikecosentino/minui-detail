@@ -11,16 +11,19 @@
 //     "image":       "/mnt/SDCARD/.../co1abc.png",
 //     "fields":      [ {"label": "Genre", "value": "Role-playing (RPG)"}, ... ],
 //     "note":        "Already downloaded",
-//     "description": "The world has fallen under the control of ..."
+//     "description": "The world has fallen under the control of ...",
+//     "screenshots": [ "/mnt/SDCARD/.../sc1.jpg", ... ]
 //   }
 //
 // Every key is optional. A field with no value is left out rather than drawn
 // as a bare label, so the writer can pass through whatever it has without
-// filtering first. Values may be strings or numbers.
+// filtering first. Values may be strings or numbers. Screenshots are drawn
+// after the description, in order; an empty path is skipped the same way.
 
 #define DETAIL_TEXT_MAX 512
 #define DETAIL_PATH_MAX 1024
 #define DETAIL_FIELDS_MAX 24
+#define DETAIL_SHOTS_MAX 8
 
 typedef struct
 {
@@ -40,6 +43,9 @@ typedef struct
 
     DetailField fields[DETAIL_FIELDS_MAX];
     int field_count;
+
+    char shots[DETAIL_SHOTS_MAX][DETAIL_PATH_MAX];
+    int shot_count;
 } DetailDoc;
 
 // DetailDoc_Parse fills *doc from the JSON text. Returns 1 on success; on

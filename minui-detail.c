@@ -1,6 +1,6 @@
 // minui-detail shows one thing in detail for MinUI and NextUI paks: a cover
-// image, a title, a column of facts and a description that scrolls, over a
-// row of button hints.
+// image, a title, a column of facts, a description and screenshots that
+// scroll, over a row of button hints.
 //
 //   minui-detail --file /tmp/detail.json \
 //       --confirm-text DOWNLOAD --action-button X --action-text STAR
@@ -126,6 +126,14 @@ struct Layout
 
     struct Item items[MAX_ITEMS];
     int item_count;
+
+    // screenshots, below the description. src is the full-size image, read
+    // once; rect is where layout_column put it, relative to the column's top,
+    // and shot is src scaled to that size once the layout is final.
+    SDL_Surface *shot_src[DETAIL_SHOTS_MAX];
+    SDL_Surface *shot[DETAIL_SHOTS_MAX];
+    SDL_Rect shot_rect[DETAIL_SHOTS_MAX];
+    int shot_count;
     int content_h;
     int scroll;
     bool scrollbar;
@@ -250,11 +258,11 @@ static int measure_font(const char *s, size_t len, void *ctx)
     return w;
 }
 
-// load_cover reads the image, flattens it onto the background (so a PNG
+// load_flat reads an image and flattens it onto the background, so a PNG
 // with transparency looks right without the scaler having to know about
-// alpha), and box-filters it to fit inside box_w x box_h. Returns NULL if
-// the image is missing or unreadable; the screen then goes without.
-static SDL_Surface *load_cover(const char *path, int box_w, int box_h)
+// alpha. Returns NULL if the image is missing or unreadable; the screen then
+// goes without it.
+static SDL_Surface *load_flat(const char *path)
 {
     if (path == NULL || path[0] == '\0')
         return NULL;
@@ -267,33 +275,47 @@ static SDL_Surface *load_cover(const char *path, int box_w, int box_h)
 
     const uint32_t rm = 0x00FF0000, gm = 0x0000FF00, bm = 0x000000FF, am = 0xFF000000;
     SDL_Surface *flat = SDL_CreateRGBSurface(0, img->w, img->h, 32, rm, gm, bm, am);
-    int dw, dh;
-    Image_Fit(img->w, img->h, box_w, box_h, &dw, &dh);
-    SDL_Surface *scaled = SDL_CreateRGBSurface(0, dw, dh, 32, rm, gm, bm, am);
-    SDL_Surface *out = NULL;
-
-    if (flat != NULL && scaled != NULL)
+    if (flat != NULL)
     {
         SDL_Color bg = background_rgb();
         SDL_FillRect(flat, NULL, SDL_MapRGBA(flat->format, bg.r, bg.g, bg.b, 255));
         SDL_BlitSurface(img, NULL, flat, NULL);
-
-        SDL_LockSurface(flat);
-        SDL_LockSurface(scaled);
-        int ok = Image_Resample(flat->pixels, flat->w, flat->h, flat->pitch / 4,
-                                scaled->pixels, dw, dh, scaled->pitch / 4);
-        SDL_UnlockSurface(scaled);
-        SDL_UnlockSurface(flat);
-
-        if (ok)
-            out = SDL_ConvertSurface(scaled, screen->format, 0);
     }
-
     SDL_FreeSurface(img);
-    if (flat)
-        SDL_FreeSurface(flat);
-    if (scaled)
-        SDL_FreeSurface(scaled);
+    return flat;
+}
+
+// scale_flat box-filters a load_flat surface to dw x dh, in the screen's
+// format. Returns NULL if it runs out of memory.
+static SDL_Surface *scale_flat(SDL_Surface *flat, int dw, int dh)
+{
+    const uint32_t rm = 0x00FF0000, gm = 0x0000FF00, bm = 0x000000FF, am = 0xFF000000;
+    SDL_Surface *scaled = SDL_CreateRGBSurface(0, dw, dh, 32, rm, gm, bm, am);
+    if (scaled == NULL)
+        return NULL;
+
+    SDL_LockSurface(flat);
+    SDL_LockSurface(scaled);
+    int ok = Image_Resample(flat->pixels, flat->w, flat->h, flat->pitch / 4,
+                            scaled->pixels, dw, dh, scaled->pitch / 4);
+    SDL_UnlockSurface(scaled);
+    SDL_UnlockSurface(flat);
+
+    SDL_Surface *out = ok ? SDL_ConvertSurface(scaled, screen->format, 0) : NULL;
+    SDL_FreeSurface(scaled);
+    return out;
+}
+
+// load_cover reads the image and scales it to fit inside box_w x box_h
+static SDL_Surface *load_cover(const char *path, int box_w, int box_h)
+{
+    SDL_Surface *flat = load_flat(path);
+    if (flat == NULL)
+        return NULL;
+    int dw, dh;
+    Image_Fit(flat->w, flat->h, box_w, box_h, &dw, &dh);
+    SDL_Surface *out = scale_flat(flat, dw, dh);
+    SDL_FreeSurface(flat);
     return out;
 }
 
@@ -369,7 +391,8 @@ static int add_wrapped(TTF_Font *f, enum TextStyle style, int x, int y, int w,
 //   Label  value    (one row per field, labels dimmed, values wrapping)
 //   note            (small, accent)
 //   description     (small)
-static int layout_column(const DetailDoc *doc, int x, int w, int title_w, int gap)
+//   screenshots     (the column's width, no taller than the window)
+static int layout_column(const DetailDoc *doc, int x, int w, int title_w, int gap, int max_h)
 {
     layout.item_count = 0;
     int y = 0;
@@ -412,6 +435,19 @@ static int layout_column(const DetailDoc *doc, int x, int w, int title_w, int ga
             y += gap;
         y = add_wrapped(font.small, StyleText, x, y, w, doc->description, 0);
     }
+
+    // each fits the column's width, and is held to the window's height so a
+    // portrait shot never needs scrolling through to see whole
+    for (int i = 0; i < layout.shot_count; i++)
+    {
+        SDL_Surface *src = layout.shot_src[i];
+        int dw, dh;
+        Image_Fit(src->w, src->h, w, max_h, &dw, &dh);
+        if (y > 0)
+            y += gap;
+        layout.shot_rect[i] = (SDL_Rect){x, y, dw, dh};
+        y += dh;
+    }
     return y;
 }
 
@@ -441,17 +477,34 @@ static void build_layout(struct AppState *state)
     int reserve = state->show_hardware_group ? SCALE1(PILL_SIZE * 2) + l->gap : 0;
     l->scrollbar_top = state->show_hardware_group ? SCALE1(PILL_SIZE) + l->gap / 2 : 0;
 
+    l->shot_count = 0;
+    for (int i = 0; i < doc->shot_count; i++)
+    {
+        SDL_Surface *src = load_flat(doc->shots[i]);
+        if (src != NULL)
+            l->shot_src[l->shot_count++] = src;
+    }
+
     // lay out at the full width first; only if that overflows the window is
     // a scrollbar needed, and then the text wraps again beside it
     l->scrollbar = false;
-    l->content_h = layout_column(doc, col_x, col_w, col_w - reserve, l->gap);
+    l->content_h = layout_column(doc, col_x, col_w, col_w - reserve, l->gap, l->view.h);
     if (l->content_h > l->view.h)
     {
         l->scrollbar = true;
         int w = col_w - SCALE1(SCROLLBAR_WIDTH) - l->gap;
-        l->content_h = layout_column(doc, col_x, w, w - reserve, l->gap);
+        l->content_h = layout_column(doc, col_x, w, w - reserve, l->gap, l->view.h);
     }
     l->scroll = 0;
+
+    // only now is each screenshot's size final; the full-size copies go, as
+    // three 720p images would otherwise sit in memory for nothing
+    for (int i = 0; i < l->shot_count; i++)
+    {
+        l->shot[i] = scale_flat(l->shot_src[i], l->shot_rect[i].w, l->shot_rect[i].h);
+        SDL_FreeSurface(l->shot_src[i]);
+        l->shot_src[i] = NULL;
+    }
 }
 
 static int max_scroll(void)
@@ -503,6 +556,18 @@ void draw_screen(SDL_Surface *dst, struct AppState *state)
         memcpy(buf, it->text, len);
         buf[len] = '\0';
         draw_text(dst, it->font, buf, style_color(it->style), it->x, y, it->w);
+    }
+    for (int i = 0; i < l->shot_count; i++)
+    {
+        if (l->shot[i] == NULL)
+            continue;
+        SDL_Rect r = l->shot_rect[i];
+        r.y += l->view.y - l->scroll;
+        if (r.y + r.h <= l->view.y || r.y >= l->view.y + l->view.h)
+            continue;
+        SDL_Rect pos = r;
+        SDL_BlitSurface(l->shot[i], NULL, dst, &pos);
+        round_corners(dst, r, SCALE1(COVER_RADIUS), background_color(dst));
     }
     SDL_SetClipRect(dst, NULL);
 
@@ -849,6 +914,9 @@ int main(int argc, char *argv[])
 
     if (layout.cover != NULL)
         SDL_FreeSurface(layout.cover);
+    for (int i = 0; i < layout.shot_count; i++)
+        if (layout.shot[i] != NULL)
+            SDL_FreeSurface(layout.shot[i]);
     DetailDoc_Free(&state.doc);
     quietly(destruct);
     return state.exit_code;
